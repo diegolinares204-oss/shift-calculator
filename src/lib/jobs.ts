@@ -3,8 +3,9 @@
  * El motor de cálculo trabaja siempre con un único trabajo; las vistas "Todos"
  * suman los resultados de cada trabajo calculado por separado.
  */
-import type { Absence, Contract, Holiday, Job, Payslip, Shift } from "./types";
-import { analyze, computeSalary, type Analysis, type SalaryResult } from "./engine";
+import type { Absence, Contract, Holiday, Job, Payslip, SalarySnapshot, Shift } from "./types";
+import { analyze, computeSalary, mergeBuckets, type Analysis, type SalaryResult } from "./engine";
+import { addMonths } from "./time";
 import type { CalcMode } from "./shifts";
 import { uid } from "./id";
 
@@ -54,7 +55,7 @@ export function forJob<T extends CalcInput>(d: T, jobId: string): CalcInput {
 export function sumAnalyses(list: Analysis[], from: string, to: string, mode: CalcMode): Analysis {
   const out: Analysis = {
     from, to, mode, paid: 0, net: 0, breaks: 0, night: 0, weekend: 0, holiday: 0, flagCombos: {}, byDay: {},
-    daysWorked: 0, shiftCount: 0, expected: 0, nominal: 0, excess: { total: 0, complementary: 0, overtime: 0, unclassified: 0 }, ordinary: 0,
+    daysWorked: 0, shiftCount: 0, expected: 0, nominal: 0, excess: { total: 0, complementary: 0, overtime: 0, unclassified: 0 }, ordinary: 0, payBuckets: {},
   };
   for (const a of list) {
     out.paid += a.paid; out.net += a.net; out.breaks += a.breaks; out.night += a.night; out.weekend += a.weekend; out.holiday += a.holiday;
@@ -67,6 +68,8 @@ export function sumAnalyses(list: Analysis[], from: string, to: string, mode: Ca
     }
   }
   out.daysWorked = Object.values(out.byDay).filter((d) => d.paid > 0).length;
+  const keys = new Set(list.flatMap((a) => Object.keys(a.payBuckets ?? {})));
+  for (const k of keys) out.payBuckets[k] = mergeBuckets(list.map((a) => a.payBuckets?.[k]));
   return out;
 }
 
@@ -84,9 +87,20 @@ export interface JobsSalary {
   netCents: number | null;
 }
 
-export function salaryJobs(d: CalcInput, jobIds: string[], ym: string, mode: CalcMode = "worked"): JobsSalary {
+/**
+ * Salario de uno o varios trabajos. Si un mes está cerrado (snapshot), se devuelven sus importes
+ * congelados; y la parte aplazada de un mes cerrado se respeta en la nómina del mes siguiente.
+ */
+export function salaryJobs(d: CalcInput & { snapshots?: SalarySnapshot[] }, jobIds: string[], ym: string, mode: CalcMode = "worked"): JobsSalary {
+  const snaps = d.snapshots ?? [];
+  const snapOf = (jobId: string, m: string) => snaps.find((x) => x.jobId === jobId && x.ym === m);
   const perJob = jobIds
-    .map((jobId) => ({ jobId, result: computeSalary({ ...forJob(d, jobId), ym, mode }) }))
+    .map((jobId) => {
+      const own = mode === "worked" ? snapOf(jobId, ym) : undefined;
+      if (own) return { jobId, result: { ...own.result, frozenAt: own.createdAt } as SalaryResult };
+      const prev = snapOf(jobId, addMonths(ym, -1));
+      return { jobId, result: computeSalary({ ...forJob(d, jobId), ym, mode, ...(prev ? { prevDeferredOut: prev.result.deferredOut ?? null } : {}) }) };
+    })
     .filter((x): x is { jobId: string; result: SalaryResult } => x.result !== null);
   const grossCents = perJob.reduce((s, x) => s + x.result.grossCents, 0);
   const netCents = perJob.length && perJob.every((x) => x.result.netCents !== null) ? perJob.reduce((s, x) => s + (x.result.netCents ?? 0), 0) : null;

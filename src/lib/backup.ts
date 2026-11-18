@@ -34,6 +34,8 @@ const isBlock = (b: unknown) => {
 
 const CHECKS: Partial<Record<TableName, Check>> = {
   jobs: (r) => (!isStr(r.name) ? "nombre" : !isStr(r.color) ? "color" : null),
+  salarySnapshots: (r) => (!isStr(r.jobId) || !/^\d{4}-\d{2}$/.test(String(r.ym)) || !r.result || typeof r.result !== "object" ? "mes cerrado" : null),
+  assistantMessages: (r) => (!isStr(r.text) || !["user", "assistant"].includes(r.role as string) ? "mensaje" : null),
   shifts: (r) => (!isDateKey(r.date) ? "fecha" : !isBlock(r.planned) ? "horario previsto" : r.actual != null && !isBlock(r.actual) ? "horario real" : !["planned", "done", "cancelled"].includes(r.status as string) ? "estado" : null),
   clockSessions: (r) => (!isNum(r.startAt) ? "entrada" : r.endAt !== null && !isNum(r.endAt) ? "salida" : null),
   clockBreaks: (r) => (!isStr(r.sessionId) || !isNum(r.startAt) ? "descanso" : null),
@@ -101,6 +103,7 @@ function contentKey(t: TableName, r: Record<string, unknown>): string | null {
       return `${r.jobId}|${p.start}|${p.end}`;
     }
     case "payslips": return `${r.jobId}|${r.period}`;
+    case "salarySnapshots": return `${r.jobId}|${r.ym}`;
     case "holidays": return `${r.date}|${String(r.name).toLowerCase()}`;
     case "clockSessions": return String(r.startAt);
     case "absences": return `${r.jobId ?? "*"}|${r.type}|${r.startDate}|${r.endDate}`;

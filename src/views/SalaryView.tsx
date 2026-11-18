@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Calculator, ChevronLeft, ChevronRight, FileText, Plus, Receipt, Trash2, Pencil, Moon } from "lucide-react";
+import { Calculator, ChevronLeft, ChevronRight, FileText, Plus, Receipt, Trash2, Pencil, Moon, Lock, LockOpen } from "lucide-react";
 import { Badge, Button, Callout, Card, CardTitle, EmptyState, Field, IconButton, LabeledInput, Modal, PageHeader, Segmented, Spinner, Stat, Tabs, Textarea, Toggle, useFeedback, cx } from "@/components/ui";
 import { MoneyField, currencySymbol } from "@/components/inputs";
 import { BarChart } from "@/components/charts";
@@ -10,9 +10,9 @@ import { useCalcData, usePayslips, useToday } from "@/lib/hooks";
 import { computeSalary, hourlyRate, quickCalc, type SalaryResult } from "@/lib/engine";
 import { forJob, jobLabel, netJobs, netOf, payslipsNetTotal, payslipsTotal, salaryJobs, sumAnalyses } from "@/lib/jobs";
 import { JobDot, JobSelect, JobTag } from "@/components/jobs";
-import { addMonths, fmtDate, fmtDuration, fmtHours, fmtMonth, dateOf, timeOf } from "@/lib/time";
+import { addMonths, fmtDate, fmtDateTimeEpoch, fmtDuration, fmtHours, fmtMonth, dateOf, timeOf } from "@/lib/time";
 import { fmtMoney, fmtPercent, percentOf } from "@/lib/money";
-import { getDb } from "@/db/repo";
+import { closeMonth, getDb, reopenMonth } from "@/db/repo";
 import { uid } from "@/lib/id";
 import { initialFromHash } from "@/lib/hash";
 import type { Contract, Payslip } from "@/lib/types";
@@ -73,6 +73,7 @@ function Breakdown({ s, currency }: { s: SalaryResult; currency: string }) {
 
 function Estimate() {
   const d = useCalcData();
+  const { confirm, toast } = useFeedback();
   const today = useToday();
   const payslips = usePayslips();
   const [ym, setYm] = useState(today.slice(0, 7));
@@ -86,6 +87,11 @@ function Estimate() {
   const realTotal = payslipsTotal(payslips ?? [], d.jobIds, ym);
   const realNet = payslipsNetTotal(payslips ?? [], d.jobIds, ym);
   const net = netJobs(all);
+  // cálculo con la configuración actual (para comparar con un mes cerrado)
+  const liveFor = (jobId: string) => {
+    const prev = d.snapshots.find((x) => x.jobId === jobId && x.ym === addMonths(ym, -1));
+    return computeSalary({ ...forJob(d, jobId), ym, mode, ...(prev ? { prevDeferredOut: prev.result.deferredOut ?? null } : {}) });
+  };
   const a = combined ? sumAnalyses(all.perJob.map((x) => x.result.analysis), `${ym}-01`, `${ym}-28`, mode) : all.perJob[0].result.analysis;
   return (
     <div className="space-y-4">
@@ -137,11 +143,35 @@ function Estimate() {
         const an = s.analysis;
         return (
           <Card key={jobId}>
-            <CardTitle action={<Button size="sm" variant="soft" icon={slip ? <Pencil className="size-4" /> : <Plus className="size-4" />} onClick={() => setSlipOpen(slip ?? emptySlip(ym, jobId))}>{slip ? "Editar nómina real" : "Registrar nómina real"}</Button>}>
+            <CardTitle action={
+              <div className="flex flex-wrap justify-end gap-2">
+                {mode === "worked" && (s.frozenAt ? (
+                  <Button size="sm" variant="ghost" icon={<LockOpen className="size-4" />} onClick={async () => {
+                    if (await confirm({ title: "Reabrir mes", message: "El mes volverá a calcularse con la configuración actual. Los importes congelados se descartarán.", confirmLabel: "Reabrir" })) { await reopenMonth(jobId, ym); toast("Mes reabierto"); }
+                  }}>Reabrir</Button>
+                ) : (
+                  <Button size="sm" variant="ghost" icon={<Lock className="size-4" />} onClick={async () => {
+                    if (await confirm({ title: `Cerrar ${fmtMonth(ym).toLowerCase()}`, message: "Se guardará una copia de este cálculo (incluida la parte que se cobra el mes siguiente). Aunque después cambies el contrato, el salario o los pluses, los importes de este mes no cambiarán. Puedes reabrirlo cuando quieras.", confirmLabel: "Cerrar mes" })) { await closeMonth(jobId, ym, s); toast("Mes cerrado: importes congelados"); }
+                  }}>Cerrar mes</Button>
+                ))}
+                <Button size="sm" variant="soft" icon={slip ? <Pencil className="size-4" /> : <Plus className="size-4" />} onClick={() => setSlipOpen(slip ?? emptySlip(ym, jobId))}>{slip ? "Editar nómina real" : "Registrar nómina real"}</Button>
+              </div>
+            }>
               {combined ? <span className="inline-flex items-center gap-2"><JobDot job={d.jobMap.get(jobId)} />Desglose · {jobLabel(d.jobMap.get(jobId))}</span> : "Desglose"}
             </CardTitle>
             <p className="mb-3 text-xs text-fg-3">Periodo de nómina: {fmtDate(s.period.from)} – {fmtDate(s.period.to)} · Precio/hora {fmtMoney(s.hourlyCents, d.currency)} {s.hourlyDerived ? "(derivado del salario)" : "(introducido)"}{slip ? ` · Nómina real ${fmtMoney(slip.grossCents, d.currency)}` : ""}</p>
             {s.warnings.map((w) => <div key={w} className="mb-3"><Callout tone="warn">{w}</Callout></div>)}
+            {s.frozenAt && <FrozenNote s={s} live={liveFor(jobId)} currency={d.currency} />}
+            {s.deferredIn && (
+              <div className="mb-3"><Callout tone="info" title={`Incluye turnos de ${fmtMonth(s.deferredIn.workYm).toLowerCase()} cobrados en esta nómina`}>
+                {fmtHours(s.deferredIn.minutes)} trabajadas en {fmtMonth(s.deferredIn.workYm).toLowerCase()} · {fmtMoney(s.deferredIn.grossCents, d.currency)} brutos, calculados con las condiciones de ese mes (líneas marcadas «turnos de {fmtMonth(s.deferredIn.workYm).split(" ")[0].toLowerCase()}»).
+              </Callout></div>
+            )}
+            {s.deferredOut && (
+              <div className="mb-3"><Callout tone="warn" title={`Pendiente de cobro en ${fmtMonth(s.deferredOut.payYm).toLowerCase()}`}>
+                Turnos de este mes marcados para cobrarse el mes siguiente: {fmtHours(s.deferredOut.minutes)} · {fmtMoney(s.deferredOut.grossCents, d.currency)} brutos. Sus horas cuentan en este mes, pero su importe no está incluido aquí.
+              </Callout></div>
+            )}
             <Breakdown s={s} currency={d.currency} />
             <ExcessExplain s={s} contract={d.contractFor(jobId)} />
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-fg-2 sm:grid-cols-3 lg:grid-cols-6">
@@ -159,6 +189,18 @@ function Estimate() {
         Es una estimación con los datos y reglas que has introducido. No es una nómina oficial ni incluye retenciones ni cotizaciones que no hayas configurado. Cada trabajo se calcula con su propio contrato. Revisa las reglas en <Link href="/configuracion/#salario" className="font-medium text-accent underline">Configuración → Salario</Link>.
       </Callout>
       <PayslipEditor slip={slipOpen} onClose={() => setSlipOpen(null)} currency={d.currency} />
+    </div>
+  );
+}
+
+function FrozenNote({ s, live, currency }: { s: SalaryResult; live: SalaryResult | null; currency: string }) {
+  const diff = live ? live.grossCents - s.grossCents : 0;
+  return (
+    <div className="mb-3">
+      <Callout tone="ok" title={`Mes cerrado el ${fmtDateTimeEpoch(s.frozenAt!)}`}>
+        Los importes de este mes están congelados y no cambian aunque modifiques la configuración.
+        {live && diff !== 0 && <> Con la configuración actual el bruto sería {fmtMoney(live.grossCents, currency)} ({diff > 0 ? "+" : ""}{fmtMoney(diff, currency)}). Si quieres aplicarla, reabre el mes.</>}
+      </Callout>
     </div>
   );
 }
@@ -253,7 +295,7 @@ function Payslips() {
   const today = useToday();
   const rows = useMemo(() => {
     if (!d.ready || !payslips) return [];
-    return payslips.filter((p) => d.jobIds.includes(p.jobId)).map((p) => ({ p, est: computeSalary({ ...forJob(d, p.jobId), ym: p.period }) })).reverse();
+    return payslips.filter((p) => d.jobIds.includes(p.jobId)).map((p) => ({ p, est: salaryJobs(d, [p.jobId], p.period).perJob[0]?.result ?? null })).reverse();
   }, [d, payslips]);
   if (!payslips || !d.ready) return <Spinner />;
   const cur = d.currency;

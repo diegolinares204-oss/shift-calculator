@@ -5,7 +5,11 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { getDb, loadContracts, loadJobs } from "@/db/repo";
 import { contractAt } from "./engine";
 import { todayKey } from "./time";
-import type { Job, Absence, ClockBreak, ClockSession, Contract, Holiday, HourAdjustment, Payslip, Profile, Settings, Shift, Template } from "./types";
+import type { SalarySnapshot, Job, Absence, ClockBreak, ClockSession, Contract, Holiday, HourAdjustment, Payslip, Profile, Settings, Shift, Template } from "./types";
+
+export function useSnapshots(): SalarySnapshot[] | undefined {
+  return useLiveQuery(() => getDb().salarySnapshots.toArray(), []);
+}
 
 export function useJobs(): Job[] | undefined {
   return useLiveQuery(() => loadJobs(), []);
@@ -88,9 +92,10 @@ export function useCalcData() {
   const profile = useProfile();
   const jobs = useJobs();
   const settings = useSettings();
+  const snapshots = useSnapshots();
   const today = todayKey();
   return useMemo(() => {
-    const ready = !!shifts && !!contracts && !!holidays && !!absences && !!profile && !!jobs && jobs.length > 0 && !!settings;
+    const ready = !!shifts && !!contracts && !!holidays && !!absences && !!profile && !!jobs && jobs.length > 0 && !!settings && !!snapshots;
     const jobList = jobs ?? [];
     const requested = settings?.activeJobId ?? "all";
     const scope = requested !== "all" && jobList.some((j) => j.id === requested) ? requested : "all";
@@ -104,6 +109,7 @@ export function useCalcData() {
       contracts: allContracts,
       holidays: holidays ?? [],
       absences: absences ?? [],
+      snapshots: snapshots ?? [],
       profile: profile ?? null,
       currency: profile?.currency ?? "EUR",
       jobs: jobList,
@@ -116,7 +122,7 @@ export function useCalcData() {
       /** contrato vigente del trabajo principal del ámbito */
       contract: primaryJobId ? contractFor(primaryJobId) : null,
     };
-  }, [shifts, contracts, holidays, absences, profile, jobs, settings, today]);
+  }, [shifts, contracts, holidays, absences, profile, jobs, settings, snapshots, today]);
 }
 
 /** Marca de tiempo que se actualiza cada `ms` (para contadores en vivo). */

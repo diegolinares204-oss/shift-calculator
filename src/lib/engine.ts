@@ -14,7 +14,7 @@
  */
 import type { Absence, Contract, Holiday, Shift, Weekday, PremiumRule } from "./types";
 import { blockFor, type CalcMode, paidIntervals, blockDurations, buildBlock } from "./shifts";
-import { addDays, dateRange, diffDays, endOfMonth, endOfWeek, hhmmToMinutes, MINUTE, startOfWeek, toDateKey, weekdayOf, parseDateKey } from "./time";
+import { addDays, addMonths, dateRange, diffDays, endOfMonth, endOfWeek, hhmmToMinutes, MINUTE, startOfWeek, toDateKey, weekdayOf, parseDateKey } from "./time";
 import { amountForMinutes, percentOf, roundCents } from "./money";
 
 // ------------------------------------------------------------------ contrato
@@ -198,12 +198,54 @@ export interface Analysis {
   /** Exceso sobre el contrato imputado al rango */
   excess: { total: number; complementary: number; overtime: number; unclassified: number };
   ordinary: number;
+  /**
+   * Minutos del rango agrupados por mes de cobro. Clave "" = se cobran en el periodo de nómina
+   * en que se trabajan (lo normal). Clave "AAAA-MM" = turnos con cobro aplazado a ese mes.
+   * Las horas siguen contando en el mes trabajado; solo cambia en qué nómina se pagan.
+   */
+  payBuckets: Record<string, PayBucket>;
+}
+
+export interface PayBucket {
+  paid: number;
+  excess: { total: number; complementary: number; overtime: number; unclassified: number };
+  flagCombos: Record<number, number>;
+  /** fechas (imputadas) con minutos en este grupo */
+  days: string[];
+}
+
+function emptyBucket(): PayBucket {
+  return { paid: 0, excess: { total: 0, complementary: 0, overtime: 0, unclassified: 0 }, flagCombos: {}, days: [] };
+}
+
+export function mergeBuckets(list: (PayBucket | undefined)[]): PayBucket {
+  const out = emptyBucket();
+  const days = new Set<string>();
+  for (const b of list) {
+    if (!b) continue;
+    out.paid += b.paid;
+    out.excess.total += b.excess.total; out.excess.complementary += b.excess.complementary; out.excess.overtime += b.excess.overtime; out.excess.unclassified += b.excess.unclassified;
+    for (const [k, v] of Object.entries(b.flagCombos)) out.flagCombos[Number(k)] = (out.flagCombos[Number(k)] ?? 0) + v;
+    for (const d of b.days) days.add(d);
+  }
+  out.days = [...days].sort();
+  return out;
 }
 
 interface Minute {
   t: number;
   date: string;
   flags: number;
+  /** mes de cobro si el turno tiene el cobro aplazado */
+  payYm?: string;
+}
+
+/** Mes de nómina ("AAAA-MM") al que pertenece una fecha según el día de inicio del periodo de nómina. */
+export function payMonthOf(c: Contract | null, date: string): string {
+  const day = Math.min(28, Math.max(1, c?.payPeriodStartDay ?? 1));
+  const ym = date.slice(0, 7);
+  if (day === 1) return ym;
+  return Number(date.slice(8, 10)) >= day ? addMonths(ym, 1) : ym;
 }
 
 function emptyDay(): DayStats {
@@ -216,7 +258,10 @@ function shiftMinutes(shift: Shift, mode: CalcMode, contracts: Contract[], ctx: 
   const out: Minute[] = [];
   // regla del contrato: imputar todo el turno al día en que empieza (habitual en nóminas de hostelería)
   const startDate = block.start.slice(0, 10);
-  const toStartDay = !!contractAt(contracts, startDate)?.crossMidnightToStartDay;
+  const startContract = contractAt(contracts, startDate);
+  const toStartDay = !!startContract?.crossMidnightToStartDay;
+  // cobro aplazado: todo el turno se paga en el mes siguiente al de su periodo de nómina de inicio
+  const payYm = shift.payNextMonth ? addMonths(payMonthOf(startContract, startDate), 1) : undefined;
   for (const iv of paidIntervals(block)) {
     for (let t = iv.start; t < iv.end; t += MINUTE) {
       const d = new Date(t);
@@ -231,7 +276,7 @@ function shiftMinutes(shift: Shift, mode: CalcMode, contracts: Contract[], ctx: 
         if (c.weekend.days.includes(((d.getDay() + 6) % 7) as Weekday)) flags |= FLAG_WEEKEND;
       }
       if (ctx.holidays.has(realDate) || shift.kind === "holiday") flags |= FLAG_HOLIDAY;
-      out.push({ t, date, flags });
+      out.push(payYm ? { t, date, flags, payYm } : { t, date, flags });
     }
   }
   return out;
@@ -271,11 +316,20 @@ export function analyze(input: AnalyzeInput): Analysis {
   const res: Analysis = {
     from, to, mode, paid: 0, net: 0, breaks: 0, night: 0, weekend: 0, holiday: 0, flagCombos: {}, byDay: {},
     daysWorked: 0, shiftCount: 0, expected: 0, nominal: 0,
-    excess: { total: 0, complementary: 0, overtime: 0, unclassified: 0 }, ordinary: 0,
+    excess: { total: 0, complementary: 0, overtime: 0, unclassified: 0 }, ordinary: 0, payBuckets: {},
+  };
+  const bucketDays: Record<string, Set<string>> = {};
+  const bucketOf = (m: Minute) => {
+    const k = m.payYm ?? "";
+    return (res.payBuckets[k] ??= emptyBucket());
   };
 
   for (const m of unique) {
     if (m.date < from || m.date > to) continue;
+    const b = bucketOf(m);
+    b.paid++;
+    b.flagCombos[m.flags] = (b.flagCombos[m.flags] ?? 0) + 1;
+    (bucketDays[m.payYm ?? ""] ??= new Set()).add(m.date);
     res.paid++;
     const day = (res.byDay[m.date] ??= emptyDay());
     day.paid++;
@@ -338,11 +392,15 @@ export function analyze(input: AnalyzeInput): Analysis {
         if (inRange) {
           res.excess.total++;
           res.excess[cls]++;
+          const b = bucketOf(m);
+          b.excess.total++;
+          b.excess[cls]++;
         }
       }
     }
   }
   res.ordinary = res.paid - res.excess.total;
+  for (const [k, set] of Object.entries(bucketDays)) res.payBuckets[k].days = [...set].sort();
   return res;
 }
 
@@ -362,9 +420,22 @@ export interface SalaryLine {
   source: "user" | "calc";
 }
 
+/** Parte de una nómina que corresponde a turnos con cobro aplazado. */
+export interface DeferredPart {
+  /** mes de nómina en que se trabajó */
+  workYm: string;
+  /** mes de nómina en que se cobra */
+  payYm: string;
+  minutes: number;
+  days: number;
+  lines: SalaryLine[];
+  grossCents: number;
+}
+
 export interface SalaryResult {
   period: Period;
   ym: string;
+  /** Horas del periodo trabajado (incluye los turnos aplazados: sus horas cuentan en su mes) */
   analysis: Analysis;
   hourlyCents: number;
   hourlyDerived: boolean;
@@ -374,6 +445,12 @@ export interface SalaryResult {
   /** null si el usuario no ha configurado hipótesis de deducciones */
   netCents: number | null;
   warnings: string[];
+  /** Turnos de meses anteriores con cobro aplazado que se pagan en esta nómina (ya incluidos en `lines`) */
+  deferredIn: DeferredPart | null;
+  /** Turnos trabajados en este periodo que se cobrarán en la nómina siguiente (NO incluidos en `lines`) */
+  deferredOut: DeferredPart | null;
+  /** Si el mes está cerrado: fecha en que se congelaron los importes */
+  frozenAt?: number;
 }
 
 function premiumPerHourCents(rule: PremiumRule, hourly: number): number {
@@ -399,6 +476,120 @@ export interface SalaryInput {
   ym: string;
   /** "worked" (realizado) o "planned" (previsión) */
   mode?: CalcMode;
+  /**
+   * Parte aplazada del mes anterior ya congelada (mes cerrado). Si se indica, se usa tal cual
+   * en lugar de recalcularla, para que cambios posteriores de configuración no la alteren.
+   */
+  prevDeferredOut?: DeferredPart | null;
+}
+
+const MONTHS_LC = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const monthName = (ym: string) => MONTHS_LC[Number(ym.slice(5, 7)) - 1] ?? ym;
+
+/** Línea de salario base por horas (solo contratos pagados por horas). */
+function hourlyBaseLine(b: PayBucket, hourly: number, key: string, suffix: string): SalaryLine {
+  const ordinary = b.paid - b.excess.total;
+  return { key, label: `Salario por horas ordinarias${suffix}`, detail: `${hoursLabel(ordinary)} × precio/hora`, minutes: ordinary, rateCents: hourly, amountCents: amountForMinutes(ordinary, hourly), kind: "earning", source: "calc" };
+}
+
+/** Horas de más y pluses por franja de un grupo de minutos. */
+function excessAndPremiumLines(b: PayBucket, c: Contract, hourly: number, keyPrefix: string, suffix: string): SalaryLine[] {
+  const lines: SalaryLine[] = [];
+  const ex = b.excess;
+  if (ex.unclassified > 0) {
+    const rate = c.unclassifiedPay === "ordinary" ? hourly : 0;
+    lines.push({
+      key: `${keyPrefix}unclassified`,
+      label: `Diferencia sobre contrato (sin clasificar)${suffix}`,
+      detail: c.unclassifiedPay === "ordinary" ? `${hoursLabel(ex.unclassified)} a precio ordinario (según tu configuración)` : `${hoursLabel(ex.unclassified)} no retribuidas (según tu configuración)`,
+      minutes: ex.unclassified, rateCents: rate, amountCents: amountForMinutes(ex.unclassified, rate), kind: "earning", source: "calc",
+    });
+  }
+  if (ex.complementary > 0) {
+    const rate = excessRate(c.complementary, hourly);
+    lines.push({ key: `${keyPrefix}complementary`, label: `Horas complementarias${suffix}`, detail: c.complementary.payMode === "unpaid" ? `${hoursLabel(ex.complementary)} compensadas con descanso` : `${hoursLabel(ex.complementary)} × tarifa configurada`, minutes: ex.complementary, rateCents: roundCents(rate), amountCents: amountForMinutes(ex.complementary, rate), kind: "earning", source: "calc" });
+  }
+  if (ex.overtime > 0) {
+    const rate = excessRate(c.overtime, hourly);
+    lines.push({ key: `${keyPrefix}overtime`, label: `Horas extraordinarias${suffix}`, detail: c.overtime.payMode === "unpaid" ? `${hoursLabel(ex.overtime)} compensadas con descanso` : `${hoursLabel(ex.overtime)} × tarifa configurada`, minutes: ex.overtime, rateCents: roundCents(rate), amountCents: amountForMinutes(ex.overtime, rate), kind: "earning", source: "calc" });
+  }
+
+  const rates = {
+    night: premiumPerHourCents(c.night, hourly),
+    weekend: premiumPerHourCents(c.weekend, hourly),
+    holiday: premiumPerHourCents(c.holiday, hourly),
+  };
+  const premiumMinutes = { night: 0, weekend: 0, holiday: 0 };
+  for (const [k, mins] of Object.entries(b.flagCombos)) {
+    const flags = Number(k);
+    const applicable: (keyof typeof rates)[] = [];
+    if (flags & FLAG_NIGHT && rates.night > 0) applicable.push("night");
+    if (flags & FLAG_WEEKEND && rates.weekend > 0) applicable.push("weekend");
+    if (flags & FLAG_HOLIDAY && rates.holiday > 0) applicable.push("holiday");
+    if (applicable.length === 0) continue;
+    if (c.stackPremiums) for (const a of applicable) premiumMinutes[a] += mins;
+    else {
+      const best = applicable.reduce((x, y) => (rates[y] > rates[x] ? y : x));
+      premiumMinutes[best] += mins;
+    }
+  }
+  const premiumLabels = { night: "Plus de nocturnidad", weekend: "Plus de fin de semana", holiday: "Plus de festivos" } as const;
+  for (const k of ["night", "weekend", "holiday"] as const) {
+    const mins = premiumMinutes[k];
+    if (mins <= 0) continue;
+    const rule = c[k];
+    lines.push({
+      key: `${keyPrefix}${k}`, label: `${premiumLabels[k]}${suffix}`,
+      detail: `${hoursLabel(mins)} × ${rule.mode === "percent" ? `${rule.value.toLocaleString("es-ES")} % del precio/hora` : "importe fijo por hora"}${c.stackPremiums ? "" : " (sin acumular pluses)"}`,
+      minutes: mins, rateCents: roundCents(rates[k]), amountCents: amountForMinutes(mins, rates[k]), kind: "earning", source: "calc",
+    });
+  }
+  return lines;
+}
+
+/**
+ * Complementos configurados. En la parte normal se aplican todos; en la parte aplazada solo los
+ * que dependen del trabajo realizado (por hora, por día y, si se cobra por horas, % de la base),
+ * porque los fijos mensuales pertenecen a la nómina de cada mes.
+ */
+function complementLines(b: PayBucket, c: Contract, baseCents: number, group: "now" | "deferred", keyPrefix: string, suffix: string): SalaryLine[] {
+  const lines: SalaryLine[] = [];
+  for (const oc of c.otherComplements) {
+    if (!oc.enabled) continue;
+    let amount = 0;
+    let detail = "";
+    let source: "user" | "calc" = "calc";
+    switch (oc.type) {
+      case "monthly_fixed":
+        if (group === "deferred") continue;
+        amount = oc.amount; detail = "Importe mensual fijo"; source = "user"; break;
+      case "per_hour": amount = amountForMinutes(b.paid, oc.amount); detail = `${hoursLabel(b.paid)} × importe por hora`; break;
+      case "per_day": amount = oc.amount * b.days.length; detail = `${b.days.length} días trabajados × importe por día`; break;
+      case "percent_base":
+        if (group === "deferred" && c.payType !== "hourly") continue;
+        amount = percentOf(baseCents, oc.amount); detail = `${oc.amount.toLocaleString("es-ES")} % del salario base`; break;
+    }
+    if (amount !== 0) lines.push({ key: `${keyPrefix}oc-${oc.id}`, label: `${oc.name || "Complemento"}${suffix}`, detail, amountCents: amount, kind: "earning", source });
+  }
+  return lines;
+}
+
+/** Importe de un grupo de turnos aplazados, con las condiciones del mes en que se trabajaron. */
+function deferredPart(b: PayBucket, c: Contract, workYm: string, payYm: string): DeferredPart {
+  const { cents: hourly } = hourlyRate(c);
+  const suffix = ` (turnos de ${monthName(workYm)})`;
+  const keyPrefix = `def-${workYm}-`;
+  const lines: SalaryLine[] = [];
+  let baseCents = 0;
+  if (c.payType === "hourly") {
+    const l = hourlyBaseLine(b, hourly, `${keyPrefix}base`, suffix);
+    baseCents = l.amountCents;
+    lines.push(l);
+  }
+  lines.push(...excessAndPremiumLines(b, c, hourly, keyPrefix, suffix));
+  lines.push(...complementLines(b, c, baseCents, "deferred", keyPrefix, suffix));
+  const nonZero = lines.filter((l) => l.amountCents !== 0 || (l.minutes ?? 0) > 0);
+  return { workYm, payYm, minutes: b.paid, days: b.days.length, lines: nonZero, grossCents: nonZero.reduce((s2, l) => s2 + l.amountCents, 0) };
 }
 
 export function computeSalary(input: SalaryInput): SalaryResult | null {
@@ -413,11 +604,18 @@ export function computeSalary(input: SalaryInput): SalaryResult | null {
   const warnings: string[] = [];
   if (hourly === 0) warnings.push("No hay precio por hora ni salario configurado: los importes por hora serán 0.");
 
+  // Minutos de este periodo que se cobran en esta nómina (todos salvo los aplazados a meses posteriores)
+  const nextYm = addMonths(input.ym, 1);
+  const nowKeys = Object.keys(analysis.payBuckets).filter((k) => k === "" || k <= input.ym);
+  const outKeys = Object.keys(analysis.payBuckets).filter((k) => k !== "" && k > input.ym);
+  const now = mergeBuckets(nowKeys.map((k) => analysis.payBuckets[k]));
+
   // Salario base
   let baseCents = 0;
   if (c.payType === "hourly") {
-    baseCents = amountForMinutes(analysis.ordinary, hourly);
-    lines.push({ key: "base", label: "Salario por horas ordinarias", detail: `${hoursLabel(analysis.ordinary)} × precio/hora`, minutes: analysis.ordinary, rateCents: hourly, amountCents: baseCents, kind: "earning", source: "calc" });
+    const l = hourlyBaseLine(now, hourly, "base", "");
+    baseCents = l.amountCents;
+    lines.push(l);
   } else {
     baseCents = c.monthlyGrossCents;
     lines.push({ key: "base", label: "Salario base mensual", detail: "Importe mensual introducido", amountCents: baseCents, kind: "earning", source: "user" });
@@ -440,74 +638,31 @@ export function computeSalary(input: SalaryInput): SalaryResult | null {
     warnings.push("Hay pagas extra configuradas pero sin importe: indica el importe de cada paga.");
   }
 
-  // Excesos
-  const ex = analysis.excess;
-  if (ex.unclassified > 0) {
-    const rate = c.unclassifiedPay === "ordinary" ? hourly : 0;
-    lines.push({
-      key: "unclassified",
-      label: "Diferencia sobre contrato (sin clasificar)",
-      detail: c.unclassifiedPay === "ordinary" ? `${hoursLabel(ex.unclassified)} a precio ordinario (según tu configuración)` : `${hoursLabel(ex.unclassified)} no retribuidas (según tu configuración)`,
-      minutes: ex.unclassified, rateCents: rate, amountCents: amountForMinutes(ex.unclassified, rate), kind: "earning", source: "calc",
-    });
-  }
-  if (ex.complementary > 0) {
-    const rate = excessRate(c.complementary, hourly);
-    lines.push({ key: "complementary", label: "Horas complementarias", detail: c.complementary.payMode === "unpaid" ? `${hoursLabel(ex.complementary)} compensadas con descanso` : `${hoursLabel(ex.complementary)} × tarifa configurada`, minutes: ex.complementary, rateCents: roundCents(rate), amountCents: amountForMinutes(ex.complementary, rate), kind: "earning", source: "calc" });
-  }
-  if (ex.overtime > 0) {
-    const rate = excessRate(c.overtime, hourly);
-    lines.push({ key: "overtime", label: "Horas extraordinarias", detail: c.overtime.payMode === "unpaid" ? `${hoursLabel(ex.overtime)} compensadas con descanso` : `${hoursLabel(ex.overtime)} × tarifa configurada`, minutes: ex.overtime, rateCents: roundCents(rate), amountCents: amountForMinutes(ex.overtime, rate), kind: "earning", source: "calc" });
-  }
+  // Horas de más, pluses por franja y complementos de lo que se cobra este mes
+  lines.push(...excessAndPremiumLines(now, c, hourly, "", ""));
+  lines.push(...complementLines(now, c, baseCents, "now", "", ""));
 
-  // Pluses por franja (nocturnidad, fin de semana, festivos)
-  const rates = {
-    night: premiumPerHourCents(c.night, hourly),
-    weekend: premiumPerHourCents(c.weekend, hourly),
-    holiday: premiumPerHourCents(c.holiday, hourly),
-  };
-  const premiumMinutes = { night: 0, weekend: 0, holiday: 0 };
-  for (const [k, mins] of Object.entries(analysis.flagCombos)) {
-    const flags = Number(k);
-    const applicable: (keyof typeof rates)[] = [];
-    if (flags & FLAG_NIGHT && rates.night > 0) applicable.push("night");
-    if (flags & FLAG_WEEKEND && rates.weekend > 0) applicable.push("weekend");
-    if (flags & FLAG_HOLIDAY && rates.holiday > 0) applicable.push("holiday");
-    if (applicable.length === 0) continue;
-    if (c.stackPremiums) for (const a of applicable) premiumMinutes[a] += mins;
-    else {
-      const best = applicable.reduce((x, y) => (rates[y] > rates[x] ? y : x));
-      premiumMinutes[best] += mins;
+  // Turnos del mes anterior con cobro aplazado a esta nómina (condiciones del mes en que se trabajaron)
+  let deferredIn: DeferredPart | null = null;
+  const prevYm = addMonths(input.ym, -1);
+  if (input.prevDeferredOut !== undefined) {
+    deferredIn = input.prevDeferredOut && input.prevDeferredOut.payYm === input.ym ? input.prevDeferredOut : null;
+  } else if (input.shifts.some((x) => x.payNextMonth)) {
+    const cPrev = contractAt(input.contracts, endOfMonth(prevYm));
+    if (cPrev) {
+      const pPrev = payPeriod(cPrev, prevYm);
+      const aPrev = analyze({ ...input, from: pPrev.from, to: pPrev.to, mode });
+      const b = aPrev.payBuckets[input.ym];
+      if (b && b.paid > 0) deferredIn = deferredPart(b, cPrev, prevYm, input.ym);
     }
   }
-  const premiumLabels = { night: "Plus de nocturnidad", weekend: "Plus de fin de semana", holiday: "Plus de festivos" } as const;
-  for (const k of ["night", "weekend", "holiday"] as const) {
-    const mins = premiumMinutes[k];
-    if (mins <= 0) continue;
-    const rule = c[k];
-    lines.push({
-      key: k, label: premiumLabels[k],
-      detail: `${hoursLabel(mins)} × ${rule.mode === "percent" ? `${rule.value.toLocaleString("es-ES")} % del precio/hora` : "importe fijo por hora"}${c.stackPremiums ? "" : " (sin acumular pluses)"}`,
-      minutes: mins, rateCents: roundCents(rates[k]), amountCents: amountForMinutes(mins, rates[k]), kind: "earning", source: "calc",
-    });
-  }
+  if (deferredIn) lines.push(...deferredIn.lines);
 
-  // Otros complementos
-  for (const oc of c.otherComplements) {
-    if (!oc.enabled) continue;
-    let amount = 0;
-    let detail = "";
-    let source: "user" | "calc" = "calc";
-    switch (oc.type) {
-      case "monthly_fixed": amount = oc.amount; detail = "Importe mensual fijo"; source = "user"; break;
-      case "per_hour": amount = amountForMinutes(analysis.paid, oc.amount); detail = `${hoursLabel(analysis.paid)} × importe por hora`; break;
-      case "per_day": amount = oc.amount * analysis.daysWorked; detail = `${analysis.daysWorked} días trabajados × importe por día`; break;
-      case "percent_base": amount = percentOf(baseCents, oc.amount); detail = `${oc.amount.toLocaleString("es-ES")} % del salario base`; break;
-    }
-    if (amount !== 0) lines.push({ key: `oc-${oc.id}`, label: oc.name || "Complemento", detail, amountCents: amount, kind: "earning", source });
-  }
+  // Turnos de este periodo que se cobrarán en la nómina siguiente (informativo; no suman aquí)
+  const outBucket = mergeBuckets(outKeys.map((k) => analysis.payBuckets[k]));
+  const deferredOut = outBucket.paid > 0 ? deferredPart(outBucket, c, input.ym, nextYm) : null;
 
-  const grossCents = lines.reduce((s, l) => s + l.amountCents, 0);
+  const grossCents = lines.reduce((s2, l) => s2 + l.amountCents, 0);
 
   // Deducciones (solo hipótesis configuradas por el usuario)
   const activeDeductions = c.deductions.filter((d) => d.enabled);
@@ -520,7 +675,7 @@ export function computeSalary(input: SalaryInput): SalaryResult | null {
 
   return {
     period, ym: input.ym, analysis, hourlyCents: hourly, hourlyDerived: derived, lines, grossCents, deductionsCents,
-    netCents: activeDeductions.length ? grossCents - deductionsCents : null, warnings,
+    netCents: activeDeductions.length ? grossCents - deductionsCents : null, warnings, deferredIn, deferredOut,
   };
 }
 

@@ -41,6 +41,7 @@ export function ShiftItem({ shift, onEdit, showDate = true }: { shift: Shift; on
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           <Badge tone={STATUS_TONE[shift.status]}>{SHIFT_STATUS_LABELS[shift.status]}</Badge>
           {shift.kind !== "normal" && <Badge>{SHIFT_KIND_LABELS[shift.kind]}</Badge>}
+          {shift.payNextMonth && <Badge tone="warn">Se cobra el mes siguiente</Badge>}
           {cmp && cmp.diff !== 0 && <Badge tone={cmp.diff > 0 ? "warn" : "neutral"}>Real {fmtSignedHours(cmp.diff)}</Badge>}
           {d.breaks > 0 && <span className="text-xs text-fg-3">Descanso {fmtDuration(d.breaks)}</span>}
           {shift.tags.map((t) => <span key={t} className="text-xs text-fg-3">#{t}</span>)}

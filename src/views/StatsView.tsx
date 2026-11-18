@@ -31,7 +31,7 @@ export function StatsView() {
 
   const data = useMemo(() => {
     if (!d.ready || !payslips) return null;
-    const base = { shifts: d.shifts, contracts: d.contracts, holidays: d.holidays, absences: d.absences };
+    const base = { shifts: d.shifts, contracts: d.contracts, holidays: d.holidays, absences: d.absences, snapshots: d.snapshots };
     const months = Array.from({ length: 12 }, (_, i) => addMonths(curYm, i - 11));
     const ids = d.jobIds;
     const monthStats = months.map((ym) => {
@@ -66,7 +66,7 @@ export function StatsView() {
 
   const byYm = (ym: string) => {
     if (!d.ready) return null;
-    const base = { shifts: d.shifts, contracts: d.contracts, holidays: d.holidays, absences: d.absences };
+    const base = { shifts: d.shifts, contracts: d.contracts, holidays: d.holidays, absences: d.absences, snapshots: d.snapshots };
     const sj = salaryJobs(base, d.jobIds, ym);
     const worked = analyzeJobs(base, d.jobIds, `${ym}-01`, endOfMonth(ym), "worked");
     const real = payslipsTotal(payslips ?? [], d.jobIds, ym);
@@ -198,7 +198,7 @@ function ExportPanel() {
     if (!ready || to < from) return;
     setBusy(fmt);
     try {
-      const r = buildReport(kind, { profile: d.profile, jobs: d.jobs, contracts: d.contracts, shifts: d.shifts, sessions: sessions!, breaks: breaks!, holidays: d.holidays, absences: d.absences, payslips: payslips! }, from, to, d.jobIds);
+      const r = buildReport(kind, { profile: d.profile, jobs: d.jobs, contracts: d.contracts, shifts: d.shifts, sessions: sessions!, breaks: breaks!, holidays: d.holidays, absences: d.absences, payslips: payslips!, snapshots: d.snapshots }, from, to, d.jobIds);
       const name = `shift-calculator_${kind}_${from}_${to}`;
       if (fmt === "csv") downloadBlob(new Blob([reportToCsv(r)], { type: "text/csv;charset=utf-8" }), `${name}.csv`);
       if (fmt === "xlsx") downloadBlob(new Blob([reportToXlsx(r) as BlobPart], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);

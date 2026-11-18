@@ -5,10 +5,11 @@ import { Copy, Plus, Trash2 } from "lucide-react";
 import { Button, Callout, Field, IconButton, Input, LabeledInput, LabeledSelect, Segmented, Textarea, Toggle, Modal, useFeedback, cx } from "./ui";
 import type { Shift, ShiftKind, ShiftStatus, TimeBlock } from "@/lib/types";
 import { SHIFT_KIND_LABELS, blockDurations, buildBlock, findOverlaps, isDuplicate, validateBlock } from "@/lib/shifts";
-import { addDays, dateOf, fmtDate, fmtDuration, resolveAfter, timeOf, todayKey } from "@/lib/time";
+import { addDays, addMonths, dateOf, fmtDate, fmtDuration, fmtMonth, resolveAfter, timeOf, todayKey } from "@/lib/time";
 import { getDb, newShift, saveShift, deleteShift, duplicateShift } from "@/db/repo";
 import { useCalcData } from "@/lib/hooks";
 import { jobLabel } from "@/lib/jobs";
+import { payMonthOf } from "@/lib/engine";
 import { JobSelect } from "./jobs";
 
 interface BreakDraft { start: string; end: string; paid: boolean }
@@ -96,7 +97,7 @@ export function ShiftEditor(props: EditorProps) {
 
 function ShiftEditorForm({ open, onClose, shift, defaultDate, defaultStatus = "planned", defaultJobId }: EditorProps) {
   const { toast, confirm } = useFeedback();
-  const { jobs, jobMap, primaryJobId } = useCalcData();
+  const { jobs, jobMap, primaryJobId, contractFor } = useCalcData();
   const [jobId, setJobId] = useState<string>(shift?.jobId ?? defaultJobId ?? primaryJobId);
   const initDate = defaultDate ?? todayKey();
   const [planned, setPlanned] = useState<BlockDraft>(() => (shift ? blockToDraft(shift.planned) : emptyDraft(initDate)));
@@ -107,6 +108,7 @@ function ShiftEditorForm({ open, onClose, shift, defaultDate, defaultStatus = "p
   const [notes, setNotes] = useState(shift?.notes ?? "");
   const [tags, setTags] = useState(shift?.tags.join(", ") ?? "");
   const [overlapOk, setOverlapOk] = useState(!!shift?.overlapConfirmed);
+  const [payNext, setPayNext] = useState(!!shift?.payNextMonth);
   const [longOk, setLongOk] = useState(false);
   const [others, setOthers] = useState<Shift[]>([]);
   const [saving, setSaving] = useState(false);
@@ -137,7 +139,8 @@ function ShiftEditorForm({ open, onClose, shift, defaultDate, defaultStatus = "p
     setSaving(true);
     const tagList = tags.split(",").map((t) => t.trim()).filter(Boolean);
     const base = shift ?? newShift(effectiveJob, planned.date, plannedBlock);
-    const next: Shift = { ...base, jobId: effectiveJob, planned: plannedBlock, actual: status === "done" && hasActual ? actualBlock : null, kind, status, notes, tags: tagList, overlapConfirmed: overlaps.length > 0 };
+    const next: Shift = { ...base, jobId: effectiveJob, planned: plannedBlock, actual: status === "done" && hasActual ? actualBlock : null, kind, status, notes, tags: tagList, overlapConfirmed: overlaps.length > 0, payNextMonth: payNext || undefined };
+    if (!payNext) delete next.payNextMonth;
     await saveShift(next);
     setSaving(false);
     toast(shift ? "Turno actualizado" : "Turno creado");
@@ -202,6 +205,15 @@ function ShiftEditorForm({ open, onClose, shift, defaultDate, defaultStatus = "p
           <LabeledInput label="Etiquetas (separadas por comas)" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Ej.: tienda centro, cobertura" />
         </div>
         <Field label="Observaciones"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} /></Field>
+        {plannedBlock && (() => {
+          const workMonth = payMonthOf(contractFor(effectiveJob), plannedBlock.start.slice(0, 10));
+          const payMonth = addMonths(workMonth, 1);
+          return (
+            <Field label="¿Cuándo se cobra este turno?" hint={payNext ? `Sus horas cuentan en ${fmtMonth(workMonth).toLowerCase()} (también para las horas extra); el importe, con sus pluses, pasa a la nómina de ${fmtMonth(payMonth).toLowerCase()}.` : `Se cobra en la nómina de ${fmtMonth(workMonth).toLowerCase()}.`}>
+              <Segmented ariaLabel="Mes de cobro" className="w-full sm:w-auto" value={payNext ? "next" : "same"} onChange={(v) => setPayNext(v === "next")} options={[{ value: "same", label: "En su mes" }, { value: "next", label: "En el mes siguiente" }]} />
+            </Field>
+          );
+        })()}
 
         {errors.map((e) => <Callout key={e.code + e.message} tone="danger">{e.message}</Callout>)}
         {needsLongOk && (

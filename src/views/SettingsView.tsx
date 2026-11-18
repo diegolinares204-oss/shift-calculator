@@ -195,6 +195,13 @@ function ContractEditor({ initial, contracts, currency: cur, mode, onSelect }: {
           </div>
         </div>
         <p className="mt-2 text-xs text-fg-3">Si cambian tus condiciones (horas, salario…), crea unas nuevas desde una fecha: los cálculos anteriores conservarán las condiciones antiguas.</p>
+        {draft.validFrom < `${today.slice(0, 7)}-01` && (
+          <div className="mt-3">
+            <Callout tone="warn" title="Los cambios aquí recalculan meses pasados">
+              Estas condiciones se aplican desde el {fmtDate(draft.validFrom)}: si las modificas, cambiarán las estimaciones de todos los meses desde esa fecha (salvo los meses cerrados en Salario). Si tus condiciones cambian a partir de ahora, usa «Nuevas condiciones».
+            </Callout>
+          </div>
+        )}
       </Card>
       {mode === "contract" ? (
         <Card>

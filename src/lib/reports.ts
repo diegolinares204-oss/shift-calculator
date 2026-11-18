@@ -1,9 +1,8 @@
 /**
  * Construcción de informes como tablas neutras (independientes del formato de salida).
  */
-import type { Job, Absence, ClockBreak, ClockSession, Contract, Holiday, Payslip, Profile, Shift } from "./types";
-import { computeSalary } from "./engine";
-import { analyzeJobs, forJob, jobLabel, netJobs, payslipsNetTotal, payslipsTotal, salaryJobs } from "./jobs";
+import type { SalarySnapshot, Job, Absence, ClockBreak, ClockSession, Contract, Holiday, Payslip, Profile, Shift } from "./types";
+import { analyzeJobs, jobLabel, netJobs, payslipsNetTotal, payslipsTotal, salaryJobs } from "./jobs";
 import { blockDurations, SHIFT_KIND_LABELS, SHIFT_STATUS_LABELS, sortShifts } from "./shifts";
 import { addMonths, endOfMonth, fmtDate, fmtDateTimeEpoch, fmtMonth, MINUTE, timeOf, dateOf, fmtLocalDateTime, WEEKDAY_ABBR, weekdayOf, toDateKey } from "./time";
 
@@ -35,6 +34,8 @@ export interface ReportData {
   holidays: Holiday[];
   absences: Absence[];
   payslips: Payslip[];
+  /** meses cerrados (importes congelados) */
+  snapshots?: SalarySnapshot[];
 }
 
 export type ReportKind = "monthly" | "annual" | "shifts" | "clock" | "salary";
@@ -80,7 +81,7 @@ export function shiftsTable(data: ReportData, from: string, to: string): ReportT
   const list = sortShifts(data.shifts.filter((s) => s.date >= from && s.date <= to));
   return {
     name: "Turnos",
-    columns: [...(multiJob(data) ? ["Trabajo"] : []), "Fecha", "Día", "Estado", "Tipo", "Entrada prevista", "Salida prevista", "Horas previstas", "Entrada real", "Salida real", "Horas realizadas", "Descansos (min)", "Etiquetas", "Observaciones"],
+    columns: [...(multiJob(data) ? ["Trabajo"] : []), "Fecha", "Día", "Estado", "Tipo", "Entrada prevista", "Salida prevista", "Horas previstas", "Entrada real", "Salida real", "Horas realizadas", "Descansos (min)", "Etiquetas", "Observaciones", "Cobro"],
     numeric: (multiJob(data) ? [7, 10, 11] : [6, 9, 10]),
     rows: list.map((s) => {
       const p = blockDurations(s.planned);
@@ -92,7 +93,7 @@ export function shiftsTable(data: ReportData, from: string, to: string): ReportT
         timeOf(s.planned.start), dateOf(s.planned.end) !== s.date ? fmtLocalDateTime(s.planned.end) : timeOf(s.planned.end),
         s.status === "cancelled" ? 0 : h(p.paid),
         real ? fmtLocalDateTime(real.start) : "", real ? fmtLocalDateTime(real.end) : "", r ? h(r.paid) : 0,
-        (r ?? p).breaks, s.tags.join(", "), s.notes,
+        (r ?? p).breaks, s.tags.join(", "), s.notes, s.payNextMonth ? "Mes siguiente" : "En su mes",
       ];
     }),
   };
@@ -153,7 +154,7 @@ export function buildReport(kind: ReportKind, fullData: ReportData, from: string
   };
   const salaryTables = (ym: string, name: (job: Job) => string) =>
     jobsIn(data).flatMap((job) => {
-      const s = computeSalary({ ...forJob(data, job.id), ym });
+      const s = salaryJobs(data, [job.id], ym).perJob[0]?.result;
       return s ? [{ job, s, name: name(job) }] : [];
     });
   const cur = data.profile?.currency ?? "EUR";

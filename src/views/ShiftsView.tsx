@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Copy, LayoutTemplate, ListChecks, Plus, Repeat, Search, Trash2, Pencil, CalendarRange } from "lucide-react";
+import Link from "next/link";
+import { ScanLine, ChevronLeft, ChevronRight, Copy, LayoutTemplate, ListChecks, Plus, Repeat, Search, Trash2, Pencil, CalendarRange } from "lucide-react";
 import { Button, Card, CardTitle, EmptyState, Field, IconButton, Input, LabeledInput, LabeledSelect, Modal, PageHeader, Segmented, Spinner, Tabs, WeekdayPicker, useFeedback, Badge, Callout } from "@/components/ui";
 import { ShiftEditor } from "@/components/ShiftEditor";
 import { ShiftItem } from "@/components/ShiftItem";
@@ -21,7 +22,7 @@ export function ShiftsView() {
   const [tab, setTab] = useState<Tab>(() => initialFromHash<Tab>({ plantillas: "templates", herramientas: "tools" }, "list"));
   return (
     <div>
-      <PageHeader title="Mis turnos" subtitle="Crea, edita, repite y organiza tus turnos." />
+      <PageHeader title="Mis turnos" subtitle="Crea, edita, repite y organiza tus turnos." actions={<Link href="/importar/" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-line bg-surface px-3 text-sm font-medium text-fg hover:bg-surface-2"><ScanLine className="size-4" />Importar cuadrante</Link>} />
       <Tabs value={tab} onChange={setTab} tabs={[{ value: "list", label: "Turnos", icon: <ListChecks className="size-4" /> }, { value: "tools", label: "Repetir y copiar", icon: <Repeat className="size-4" /> }, { value: "templates", label: "Plantillas", icon: <LayoutTemplate className="size-4" /> }]} />
       {tab === "list" && <ShiftList />}
       {tab === "tools" && <ShiftTools />}

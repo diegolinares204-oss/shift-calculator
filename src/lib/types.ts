@@ -78,6 +78,11 @@ export interface Shift {
   seriesId?: ID | null;
   /** El usuario confirmó que puede solaparse con otro turno. */
   overlapConfirmed?: boolean;
+  /**
+   * Cobro aplazado: el turno se trabaja (y sus horas cuentan) en su mes, pero su importe
+   * se paga en la nómina del mes siguiente. Ausente/false = se cobra en su mes.
+   */
+  payNextMonth?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -328,4 +333,27 @@ export interface Settings {
   /** Trabajo seleccionado en la interfaz ("all" = todos) */
   activeJobId: string;
   updatedAt: number;
+}
+
+/**
+ * Mes cerrado: copia congelada del cálculo de una nómina (incluida la parte aplazada al mes
+ * siguiente). Mientras exista, ese mes no se recalcula aunque cambie la configuración.
+ */
+export interface SalarySnapshot {
+  id: ID;
+  jobId: ID;
+  /** "AAAA-MM" */
+  ym: string;
+  createdAt: number;
+  /** Resultado completo congelado (tipo SalaryResult del motor) */
+  result: import("./engine").SalaryResult;
+}
+
+export interface AssistantMessage {
+  id: ID;
+  at: number;
+  role: "user" | "assistant";
+  text: string;
+  /** Respuesta estructurada del asistente (bloques, tipo de dato, enlaces) */
+  answer?: unknown;
 }

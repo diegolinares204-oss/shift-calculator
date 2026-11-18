@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { CalendarClock, Calculator, Download, Plus, Palmtree, Target, Timer, ArrowRight } from "lucide-react";
+import { MessageCircleQuestion, ScanLine, CalendarClock, Calculator, Download, Plus, Palmtree, Target, Timer, ArrowRight } from "lucide-react";
 import { Card, CardTitle, Stat, Button, Badge, Skeleton, Callout } from "@/components/ui";
 import { ClockWidget } from "@/components/ClockWidget";
 import { ShiftEditor } from "@/components/ShiftEditor";
@@ -33,7 +33,7 @@ export function HomeView() {
   const ym = today.slice(0, 7);
   const calc = useMemo(() => {
     if (!d.ready) return null;
-    const base = { shifts: d.shifts, contracts: d.contracts, holidays: d.holidays, absences: d.absences };
+    const base = { shifts: d.shifts, contracts: d.contracts, holidays: d.holidays, absences: d.absences, snapshots: d.snapshots };
     const ids = d.jobIds;
     const wFrom = startOfWeek(today);
     const wTo = endOfWeek(today);
@@ -167,6 +167,8 @@ export function HomeView() {
           <QuickAction href="/salario/#rapida" icon={<Calculator className="size-5" />} label="Calculadora rápida" />
           <QuickAction href="/estadisticas/#exportar" icon={<Download className="size-5" />} label="Exportar informe" />
           <QuickAction href="/ausencias/" icon={<Palmtree className="size-5" />} label="Vacaciones" />
+          <QuickAction href="/importar/" icon={<ScanLine className="size-5" />} label="Importar cuadrante" />
+          <QuickAction href="/asistente/" icon={<MessageCircleQuestion className="size-5" />} label="Preguntar al asistente" />
         </div>
       </section>
 

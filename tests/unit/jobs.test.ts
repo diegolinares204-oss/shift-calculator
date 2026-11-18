@@ -182,3 +182,41 @@ describe("varios trabajos: base de datos", () => {
     expect(onlyShop.tables[1].columns[0]).toBe("Fecha");
   });
 });
+
+describe("migración v3 → v4 (cobro aplazado, meses cerrados, asistente)", () => {
+  it("conserva todos los datos existentes y añade las tablas nuevas", async () => {
+    const { SCHEMA_V3 } = await import("@/db/schema");
+    const name = `mig4-${Date.now()}`;
+    const old = new Dexie(name);
+    old.version(1).stores(SCHEMA_V1);
+    old.version(2).stores(SCHEMA_V2);
+    old.version(3).stores(SCHEMA_V3);
+    await old.open();
+    await old.table("jobs").put({ id: MAIN_JOB_ID, name: "Mcdonalds", company: "", position: "", color: "#000", order: 0, archived: false, annualVacationDays: 30, vacationCountMode: "natural", bankStartDate: "", bankInitialMinutes: 0, createdAt: 0, updatedAt: 0 });
+    const c = contract({ id: "c1", hourlyRateCents: 1043 }) as unknown as Record<string, unknown>;
+    delete c.otherComplements; delete c.deductions;
+    await old.table("contracts").put(c);
+    await old.table("shifts").bulkPut([shift("2026-10-29", "09:00", "14:00"), shift("2026-11-02", "20:00", "01:00")]);
+    await old.table("payslips").put({ id: "p", jobId: MAIN_JOB_ID, period: "2026-10", grossCents: 137146, netCents: 108038, concepts: [], notes: "", createdAt: 0, updatedAt: 0 });
+    old.close();
+
+    const db = new ShiftDB(name);
+    await db.open();
+    expect(db.verno).toBe(4);
+    expect(await db.shifts.count()).toBe(2);
+    expect((await db.shifts.toArray()).every((s) => s.payNextMonth === undefined)).toBe(true); // por defecto, se cobran en su mes
+    expect((await loadContracts(db))[0].hourlyRateCents).toBe(1043);
+    expect((await db.payslips.toArray())[0].netCents).toBe(108038);
+    expect(await db.salarySnapshots.count()).toBe(0);
+    await db.assistantMessages.put({ id: "m", at: 1, role: "user", text: "hola" });
+    expect(await db.assistantMessages.count()).toBe(1);
+    // una copia de seguridad de la versión 3 se puede restaurar en la 4
+    const b = await createBackup(db);
+    const v3 = JSON.parse(JSON.stringify({ ...b, dbVersion: 3, data: { ...b.data, salarySnapshots: undefined, assistantMessages: undefined } })) as Backup;
+    const db2 = new ShiftDB(`${name}-r`);
+    await ensureInitialized(db2);
+    await importBackup(db2, v3, "replace");
+    expect(await db2.shifts.count()).toBe(2);
+    db.close();
+  });
+});

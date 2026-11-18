@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { BarChart3, CalendarDays, Clock3, Home, ListChecks, MoreHorizontal, Palmtree, Settings as SettingsIcon, Timer, Wallet, RefreshCw, AlertTriangle } from "lucide-react";
+import { MessageCircleQuestion, ScanLine, BarChart3, CalendarDays, Clock3, Home, ListChecks, MoreHorizontal, Palmtree, Settings as SettingsIcon, Timer, Wallet, RefreshCw, AlertTriangle } from "lucide-react";
 import { FeedbackProvider, Button, cx, Modal } from "./ui";
 import { Onboarding } from "./Onboarding";
 import { JobSwitcher } from "./jobs";
@@ -20,6 +20,8 @@ export const NAV = [
   { href: "/salario/", label: "Salario", icon: Wallet },
   { href: "/estadisticas/", label: "Estadísticas", icon: BarChart3 },
   { href: "/ausencias/", label: "Vacaciones y ausencias", icon: Palmtree },
+  { href: "/importar/", label: "Importar cuadrante", icon: ScanLine },
+  { href: "/asistente/", label: "Asistente", icon: MessageCircleQuestion },
   { href: "/configuracion/", label: "Configuración", icon: SettingsIcon },
 ] as const;
 

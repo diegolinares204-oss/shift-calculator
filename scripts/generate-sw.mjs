@@ -22,6 +22,8 @@ const urls = [];
 for (const file of walk(OUT).sort()) {
   const rel = "/" + relative(OUT, file).split(sep).join("/");
   if (rel === "/sw.js" || rel.endsWith(".map")) continue;
+  // los archivos de OCR (~13 MB) no se precargan: se guardan en caché al usarlos por primera vez
+  if (rel.startsWith("/ocr/")) continue;
   hash.update(rel);
   hash.update(readFileSync(file));
   if (rel.endsWith("/index.html")) urls.push(rel.slice(0, -"index.html".length));
@@ -33,6 +35,8 @@ const sw = `/* SHIFT CALCULATOR — service worker generado automáticamente. Ve
 const VERSION = "${version}";
 const CACHE = "shift-calculator-" + VERSION;
 const PRECACHE = ${JSON.stringify(urls)};
+// caché independiente de versiones para el motor de OCR (no se borra al actualizar la app)
+const OCR_CACHE = "sc-ocr-assets-v1";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)));
@@ -56,6 +60,17 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/ocr/")) {
+    event.respondWith((async () => {
+      const cache = await caches.open(OCR_CACHE);
+      const hit = await cache.match(url.pathname);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res.ok) await cache.put(url.pathname, res.clone());
+      return res;
+    })());
+    return;
+  }
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     let path = url.pathname;

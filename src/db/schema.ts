@@ -1,6 +1,6 @@
 import Dexie, { type Table, type Transaction } from "dexie";
 import { migrateToJobs } from "@/lib/jobs";
-import type { Job, AuditEntry, Absence, ClockBreak, ClockSession, Holiday, HourAdjustment, Payslip, Profile, Settings, Shift, Template } from "@/lib/types";
+import type { AssistantMessage, SalarySnapshot, Job, AuditEntry, Absence, ClockBreak, ClockSession, Holiday, HourAdjustment, Payslip, Profile, Settings, Shift, Template } from "@/lib/types";
 import type { ContractRow, ComplementRow } from "./rows";
 
 export const DB_NAME = "shift-calculator";
@@ -41,7 +41,17 @@ export const SCHEMA_V3: Record<string, string> = {
   hourAdjustments: "id, date, jobId",
 };
 
-export const CURRENT_DB_VERSION = 3;
+/**
+ * v4: meses cerrados (importes congelados) e historial del asistente. Solo añade tablas:
+ * no transforma datos existentes. El cobro aplazado es un campo opcional del turno.
+ */
+export const SCHEMA_V4: Record<string, string> = {
+  ...SCHEMA_V3,
+  salarySnapshots: "id, [jobId+ym], jobId, ym",
+  assistantMessages: "id, at",
+};
+
+export const CURRENT_DB_VERSION = 4;
 
 /**
  * Migración v1 → v2:
@@ -89,6 +99,8 @@ export async function upgradeToV3(tx: Transaction): Promise<void> {
 
 export class ShiftDB extends Dexie {
   jobs!: Table<Job, string>;
+  salarySnapshots!: Table<SalarySnapshot, string>;
+  assistantMessages!: Table<AssistantMessage, string>;
   profile!: Table<Profile, string>;
   contracts!: Table<ContractRow, string>;
   complements!: Table<ComplementRow, string>;
@@ -108,12 +120,13 @@ export class ShiftDB extends Dexie {
     this.version(1).stores(SCHEMA_V1);
     this.version(2).stores(SCHEMA_V2).upgrade(upgradeToV2);
     this.version(3).stores(SCHEMA_V3).upgrade(upgradeToV3);
+    this.version(4).stores(SCHEMA_V4);
   }
 }
 
 export const TABLE_NAMES = [
   "profile", "jobs", "contracts", "complements", "shifts", "clockSessions", "clockBreaks", "payslips",
-  "absences", "holidays", "templates", "settings", "auditLog", "hourAdjustments",
+  "absences", "holidays", "templates", "settings", "auditLog", "hourAdjustments", "salarySnapshots", "assistantMessages",
 ] as const;
 
 export type TableName = (typeof TABLE_NAMES)[number];

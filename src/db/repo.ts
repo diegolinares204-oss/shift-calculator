@@ -1,9 +1,10 @@
 import { ShiftDB, TABLE_NAMES } from "./schema";
 import { joinContract, splitContract } from "./rows";
-import type { Job, AuditEntry, BreakInterval, ClockSession, Contract, Shift, ShiftSpec, Template, TimeBlock } from "@/lib/types";
+import type { SalarySnapshot, Job, AuditEntry, BreakInterval, ClockSession, Contract, Shift, ShiftSpec, Template, TimeBlock } from "@/lib/types";
 import { uid } from "@/lib/id";
 import { defaultContract, defaultProfile, defaultSettings } from "@/lib/defaults";
 import { MAIN_JOB_ID, makeJob, nextJobColor } from "@/lib/jobs";
+import type { SalaryResult } from "@/lib/engine";
 import { addDays, dateRange, diffDays, fmtDateTimeEpoch, startOfWeek, toLocalDateTime, weekdayOf, dateOf, minutesBetween } from "@/lib/time";
 import { findOverlaps, isDuplicate, shiftBlockToDate, specToBlock } from "@/lib/shifts";
 
@@ -49,7 +50,8 @@ export async function createJob(partial: Partial<Job>, opts: { copyContractFrom?
 export async function deleteJob(jobId: string, db = getDb()) {
   const others = (await db.jobs.toArray()).filter((j) => j.id !== jobId);
   if (others.length === 0) throw new Error("Debe quedar al menos un trabajo.");
-  await db.transaction("rw", [db.jobs, db.contracts, db.complements, db.shifts, db.clockSessions, db.clockBreaks, db.payslips, db.hourAdjustments, db.absences, db.settings], async () => {
+  await db.transaction("rw", [db.jobs, db.contracts, db.complements, db.shifts, db.clockSessions, db.clockBreaks, db.payslips, db.hourAdjustments, db.absences, db.settings, db.salarySnapshots], async () => {
+    await db.salarySnapshots.where("jobId").equals(jobId).delete();
     const contracts = await db.contracts.where("jobId").equals(jobId).primaryKeys();
     for (const c of contracts) await db.complements.where("contractId").equals(c).delete();
     await db.contracts.bulkDelete(contracts);
@@ -93,6 +95,25 @@ export async function deleteContract(id: string, db = getDb()) {
     await db.contracts.delete(id);
     await db.complements.where("contractId").equals(id).delete();
   });
+}
+
+// ------------------------------------------------------------------ meses cerrados
+
+/**
+ * Cierra (congela) la nómina de un trabajo y mes: guarda una copia del cálculo actual. Mientras
+ * esté cerrado, los cambios de configuración no alteran ese mes ni su parte aplazada al siguiente.
+ */
+export async function closeMonth(jobId: string, ym: string, result: SalaryResult, db = getDb()): Promise<SalarySnapshot> {
+  const snap: SalarySnapshot = { id: uid(), jobId, ym, createdAt: Date.now(), result: JSON.parse(JSON.stringify({ ...result, frozenAt: undefined })) };
+  await db.transaction("rw", db.salarySnapshots, async () => {
+    await db.salarySnapshots.where("[jobId+ym]").equals([jobId, ym]).delete();
+    await db.salarySnapshots.put(snap);
+  });
+  return snap;
+}
+
+export async function reopenMonth(jobId: string, ym: string, db = getDb()) {
+  await db.salarySnapshots.where("[jobId+ym]").equals([jobId, ym]).delete();
 }
 
 // ------------------------------------------------------------------ turnos
@@ -245,6 +266,41 @@ export async function templateFromWeek(monday: string, name: string, db = getDb(
   const t: Template = { id: uid(), name, kind: "week", week, color: "#6366f1", createdAt: Date.now(), updatedAt: Date.now() };
   await db.templates.put(t);
   return t;
+}
+
+// ------------------------------------------------------------------ importación de cuadrantes
+
+export interface RosterApply {
+  jobId: string;
+  /** turnos a crear */
+  create: { date: string; block: TimeBlock }[];
+  /** turnos existentes que el usuario ha elegido sustituir o borrar (solo previstos) */
+  removeIds: string[];
+  allowOverlaps: boolean;
+}
+
+/**
+ * Aplica una importación confirmada por el usuario. Solo borra los turnos que el usuario ha
+ * elegido explícitamente (y nunca los ya realizados). Evita duplicados exactos.
+ */
+export async function applyRosterImport(input: RosterApply, db = getDb()): Promise<BulkResult & { removed: number }> {
+  let removed = 0;
+  let result: BulkResult = { created: [], skippedDuplicates: [], overlaps: [] };
+  await db.transaction("rw", db.shifts, db.auditLog, async () => {
+    for (const id of [...new Set(input.removeIds)]) {
+      const s = await db.shifts.get(id);
+      if (!s || s.jobId !== input.jobId || s.status !== "planned") continue;
+      await db.shifts.delete(id);
+      removed++;
+      await audit({ entity: "shift", entityId: id, action: "delete", summary: `Turno del ${s.date} ${s.planned.start.slice(11)}–${s.planned.end.slice(11)} sustituido o eliminado al importar un cuadrante`, reason: "Importación de cuadrante" }, db);
+    }
+    result = await createShiftsBulk(
+      input.create.map((c) => ({ jobId: input.jobId, date: c.date, block: c.block, partial: { tags: ["cuadrante"], notes: "Importado de cuadrante" } })),
+      { allowOverlaps: input.allowOverlaps },
+      db,
+    );
+  });
+  return { ...result, removed };
 }
 
 // ------------------------------------------------------------------ fichajes
